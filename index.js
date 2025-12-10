@@ -4,11 +4,11 @@ const path = require('path');
 const mime = require('mime-types');
 const config = require('./config.json');
 
-// Kali Linux / VM Optimized Client Setup
+// --- SETUP ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        headless: config.HEADLESS, // Must be false to scan QR
+        headless: config.HEADLESS,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -21,69 +21,164 @@ const client = new Client({
     }
 });
 
+// --- EVENTS ---
+
 client.on('qr', (qr) => {
     console.log('⚡ QR CODE GENERATED!');
     console.log('👉 A Chrome window has opened on your screen.');
     console.log('👉 Please scan the QR code inside that window.');
 });
 
-client.on('ready', () => {
-    console.log('✅ Client is ready! Listening for messages...');
+client.on('ready', async () => {
+    console.log('✅ Client is ready!');
+    console.log('🔄 Starting Synchronization (Filling gaps)...');
+    await syncRecentMessages(); // Triggers sync on startup
+    console.log('✅ Sync Complete! Listening for new messages...');
 });
 
-// Capture All Messages (Incoming & Outgoing)
+// Real-time Message Listener (Used for both Sync and Real-time)
 client.on('message_create', async (msg) => {
+    await processMessage(msg);
+});
+
+// --- CORE FUNCTIONS ---
+
+// 1. Universal Message Processor (Handles Text, Media, View Once, and File Naming)
+async function processMessage(msg) {
     try {
         const chat = await msg.getChat();
         if (chat.isGroup && !config.SAVE_GROUPS) return;
 
-        // Create Dates and Paths
-        const safeChatId = chat.id._serialized.replace(/[^a-zA-Z0-9@.]/g, '_');
-        const dateStr = new Date().toISOString().split('T')[0];
-        const chatDir = path.join(config.BACKUP_DIR, 'chats');
-        const mediaDir = path.join(config.BACKUP_DIR, 'media', dateStr, safeChatId);
+        // --- DYNAMIC FILE NAMING LOGIC ---
+        let filenameBase = chat.id._serialized; // Default: full WhatsApp ID (number@c.us)
+        
+        if (!chat.isGroup) {
+            const contact = await msg.getContact();
+            // Get the name, or fall back to pushname, or the raw number ID
+            const contactName = contact.name || contact.pushname || contact.id.user; 
+            
+            if (contactName) {
+                // Sanitize the name for use as a safe filename (replaces invalid chars with _)
+                filenameBase = contactName.replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
+            }
+        } else {
+            // For groups, use the group subject/name if available
+            filenameBase = chat.name || chat.id._serialized;
+            filenameBase = filenameBase.replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
+        }
 
+        // Path Setup
+        const dateStr = new Date(msg.timestamp * 1000).toISOString().split('T')[0];
+        const chatDir = path.join(config.BACKUP_DIR, 'chats');
+        const mediaDir = path.join(config.BACKUP_DIR, 'media', dateStr, filenameBase); 
+        
         await fs.ensureDir(chatDir);
 
-        // 1. Save Text
+        // A. Save Text / Log
         if (config.SAVE_MESSAGES) {
-            const logFile = path.join(chatDir, `${safeChatId}.json`);
-            const messageData = {
-                id: msg.id.id,
-                from: msg.from,
-                to: msg.to,
-                author: msg.author || msg.from,
-                body: msg.body,
-                timestamp: new Date(msg.timestamp * 1000).toISOString(),
-                hasMedia: msg.hasMedia
-            };
-            await appendToJson(logFile, messageData);
-            console.log(`📝 Text saved: ${safeChatId}`);
-        }
-
-        // 2. Save Media
-        if (config.SAVE_MEDIA && msg.hasMedia) {
-            await fs.ensureDir(mediaDir);
-            const media = await msg.downloadMedia();
-            if (media) {
-                const extension = mime.extension(media.mimetype) || 'bin';
-                const filename = `${msg.id.id}.${extension}`;
-                await fs.writeFile(path.join(mediaDir, filename), media.data, 'base64');
-                console.log(`📷 Media saved: ${filename}`);
+            const logFile = path.join(chatDir, `${filenameBase}.json`);
+            
+            const isDuplicate = await checkDuplicate(logFile, msg.id.id);
+            
+            if (!isDuplicate) {
+                const messageData = {
+                    id: msg.id.id,
+                    from: msg.from,
+                    to: msg.to,
+                    author: msg.author || msg.from,
+                    body: msg.body,
+                    timestamp: new Date(msg.timestamp * 1000).toISOString(),
+                    hasMedia: msg.hasMedia,
+                    isSentByMe: msg.fromMe, // Critical for knowing if you sent it
+                    isViewOnce: msg.isViewOnce || false 
+                };
+                await appendToJson(logFile, messageData);
+                console.log(`📝 Saved: ${msg.body.substring(0, 15)}... (${filenameBase})`);
             }
         }
-    } catch (error) {
-        console.error('Error:', error.message);
-    }
-});
 
+        // B. Save Media (Standard & View Once)
+        if (config.SAVE_MEDIA && msg.hasMedia) {
+            
+            if (msg.isViewOnce) {
+                console.log(`💣 VIEW ONCE DETECTED! Attempting to capture: ${msg.id.id}`);
+            }
+            
+            try {
+                await fs.ensureDir(mediaDir);
+                const media = await msg.downloadMedia();
+                
+                if (media) {
+                    const extension = mime.extension(media.mimetype) || 'bin';
+                    // Mark ViewOnce files in filename
+                    const prefix = msg.isViewOnce ? 'VIEWONCE_' : '';
+                    const filename = `${prefix}${msg.id.id}.${extension}`;
+                    const filePath = path.join(mediaDir, filename);
+
+                    if (!(await fs.pathExists(filePath))) {
+                        await fs.writeFile(filePath, media.data, 'base64');
+                        console.log(`📷 Media Saved: ${filename} to ${filenameBase}`);
+                    }
+                }
+            } catch (err) {
+                console.error(`❌ Failed to download media (${msg.id.id}):`, err.message);
+            }
+        }
+
+    } catch (error) {
+        console.error('Error processing message:', error.message);
+    }
+}
+
+// 2. Synchronization Logic
+async function syncRecentMessages() {
+    try {
+        const chats = await client.getChats();
+        console.log(`📂 Found ${chats.length} active chats. Syncing last ${config.SYNC_LIMIT || 50} messages each...`);
+
+        for (const chat of chats) {
+            if (chat.isGroup && !config.SAVE_GROUPS) continue;
+            
+            const limit = config.SYNC_LIMIT || 50; 
+            
+            // Fetches messages from the chat history
+            const messages = await chat.fetchMessages({ limit: limit });
+            
+            for (const msg of messages) {
+                await processMessage(msg); // Uses the main processor to save if not duplicate
+            }
+            
+            // Small delay to prevent banning/flooding
+            await new Promise(r => setTimeout(r, 500)); 
+        }
+    } catch (err) {
+        console.error('Sync Error:', err);
+    }
+}
+
+// 3. Helper: Append safely to JSON
 async function appendToJson(filePath, newData) {
     let data = [];
     try {
         if (await fs.pathExists(filePath)) data = await fs.readJson(filePath);
     } catch (err) { data = []; }
+    
+    // Check if the message is already the latest one (minor optimization)
+    if (data.length > 0 && data[data.length - 1].id === newData.id) return;
+
     data.push(newData);
     await fs.writeJson(filePath, data, { spaces: 2 });
+}
+
+// 4. Helper: Check for duplicates
+async function checkDuplicate(filePath, msgId) {
+    try {
+        if (await fs.pathExists(filePath)) {
+            const data = await fs.readJson(filePath);
+            return data.some(m => m.id === msgId);
+        }
+    } catch (err) { return false; }
+    return false;
 }
 
 client.initialize();
