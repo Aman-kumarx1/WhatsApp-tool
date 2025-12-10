@@ -24,9 +24,20 @@ const client = new Client({
 // --- EVENTS ---
 
 client.on('qr', (qr) => {
+    // This is the raw QR code data string.
     console.log('⚡ QR CODE GENERATED!');
-    console.log('👉 A Chrome window has opened on your screen.');
-    console.log('👉 Please scan the QR code inside that window.');
+    console.log('👉 QR Data String (Scan Manually):');
+    console.log(qr); // Print the raw string for manual scanning
+    
+    // You can use an online QR code generator (like 'goqr.me' or similar)
+    // to paste this string and generate the scannable image on your computer.
+    
+    console.log('---');
+    console.log('INSTRUCTIONS:');
+    console.log('1. Copy the long string above.');
+    console.log('2. Open a website like https://www.qr-code-generator.com/ in your browser.');
+    console.log('3. Paste the string into the text box to generate the image.');
+    console.log('4. Scan the generated image with WhatsApp > Linked Devices.');
 });
 
 client.on('ready', async () => {
