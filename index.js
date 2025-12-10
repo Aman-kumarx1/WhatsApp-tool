@@ -47,6 +47,7 @@ client.on('message_create', async (msg) => {
 async function processMessage(msg) {
     try {
         const chat = await msg.getChat();
+        // Check config to see if groups should be backed up
         if (chat.isGroup && !config.SAVE_GROUPS) return;
 
         // --- DYNAMIC FILE NAMING LOGIC ---
@@ -67,16 +68,20 @@ async function processMessage(msg) {
             filenameBase = filenameBase.replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
         }
 
-        // Path Setup
+        // --- PATH SETUP ---
         const dateStr = new Date(msg.timestamp * 1000).toISOString().split('T')[0];
-        const chatDir = path.join(config.BACKUP_DIR, 'chats');
+        
+        // 1. CHAT LOGS: Now saved in a contact-specific folder
+        const contactChatDir = path.join(config.BACKUP_DIR, 'chats', filenameBase); 
+        // 2. MEDIA: Saved in Date/Contact-specific folders
         const mediaDir = path.join(config.BACKUP_DIR, 'media', dateStr, filenameBase); 
         
-        await fs.ensureDir(chatDir);
+        await fs.ensureDir(contactChatDir); // Ensure the contact's log folder exists
 
         // A. Save Text / Log
         if (config.SAVE_MESSAGES) {
-            const logFile = path.join(chatDir, `${filenameBase}.json`);
+            // The log file is now 'messages.json' inside the new contact-specific directory
+            const logFile = path.join(contactChatDir, `messages.json`);
             
             const isDuplicate = await checkDuplicate(logFile, msg.id.id);
             
@@ -89,11 +94,11 @@ async function processMessage(msg) {
                     body: msg.body,
                     timestamp: new Date(msg.timestamp * 1000).toISOString(),
                     hasMedia: msg.hasMedia,
-                    isSentByMe: msg.fromMe, // Critical for knowing if you sent it
+                    isSentByMe: msg.fromMe,
                     isViewOnce: msg.isViewOnce || false 
                 };
                 await appendToJson(logFile, messageData);
-                console.log(`📝 Saved: ${msg.body.substring(0, 15)}... (${filenameBase})`);
+                console.log(`📝 Saved Log: ${msg.body.substring(0, 15)}... (${filenameBase})`);
             }
         }
 
@@ -101,7 +106,8 @@ async function processMessage(msg) {
         if (config.SAVE_MEDIA && msg.hasMedia) {
             
             if (msg.isViewOnce) {
-                console.log(`💣 VIEW ONCE DETECTED! Attempting to capture: ${msg.id.id}`);
+                // Log to console when attempting to capture view once media
+                console.log(`💣 VIEW ONCE MEDIA DETECTED! Attempting to capture: ${msg.id.id}`);
             }
             
             try {
@@ -117,7 +123,7 @@ async function processMessage(msg) {
 
                     if (!(await fs.pathExists(filePath))) {
                         await fs.writeFile(filePath, media.data, 'base64');
-                        console.log(`📷 Media Saved: ${filename} to ${filenameBase}`);
+                        console.log(`💾 Media Saved: ${filename} to ${filenameBase}`);
                     }
                 }
             } catch (err) {
@@ -129,7 +135,6 @@ async function processMessage(msg) {
         console.error('Error processing message:', error.message);
     }
 }
-
 // 2. Synchronization Logic
 async function syncRecentMessages() {
     try {
