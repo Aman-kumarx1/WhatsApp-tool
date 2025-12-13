@@ -3,6 +3,6 @@
   "SAVE_MEDIA": true,
   "SAVE_MESSAGES": true,
   "SAVE_GROUPS": true,
-  "SYNC_LIMIT": 9999,
+  "SYNC_LIMIT": 200,
   "HEADLESS": true
 }

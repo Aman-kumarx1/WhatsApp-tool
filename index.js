@@ -175,7 +175,7 @@ async function syncRecentMessages() {
         for (const chat of chats) {
             if (chat.isGroup && !config.SAVE_GROUPS) continue;
             
-            const limit = config.SYNC_LIMIT || 9999; 
+            const limit = config.SYNC_LIMIT || 200; 
             
             // Fetches messages from the chat history
             const messages = await chat.fetchMessages({ limit: limit });
