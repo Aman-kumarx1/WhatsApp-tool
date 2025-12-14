@@ -58,10 +58,23 @@ client.on('error', (error) => {
     console.error('❌ Client Error:', error.message);
 });
 
-// Disconnected event handler
-client.on('disconnected', (reason) => {
-    console.log(`⚠️ Client disconnected. Reason: ${reason}. Attempting to restart...`);
-    // Note: To truly auto-reconnect, you might need a process manager like PM2
+// Disconnected event handler (MODIFIED FOR CLEAN EXIT)
+client.on('disconnected', async (reason) => {
+    console.log(`⚠️ Client disconnected. Reason: ${reason}. Triggering clean shutdown...`);
+    
+    try {
+        // 1. Destroy the client instance to release resources/locks
+        await client.destroy(); 
+        console.log('✅ Client instance destroyed successfully.');
+    } catch (err) {
+        console.error('❌ Error during client destruction:', err.message);
+    }
+    
+    // 2. Exit the current Node.js process. 
+    // This is the signal for PM2 (or any other process manager) to restart the script.
+    await new Promise(r => setTimeout(r, 2000)); // Wait a moment for OS cleanup
+    console.log('🔄 Restarting application via process manager...');
+    process.exit(0); 
 });
 
 // --- CORE FUNCTIONS ---
